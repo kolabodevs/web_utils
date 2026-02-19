@@ -1,0 +1,23 @@
+{
+  "chipsets": [
+    {
+      "name": "Promontory 21",
+      "profiles": [
+        {
+          "name": "PROM21L.1",
+          "base": "json/pt21/cfg_base.json",
+          "variants": [
+            {
+              "name": "USB Gen2x2",
+              "file": "json/pt21/cfg_2x2.json"
+            },
+            {
+              "name": "USB Gen2x1",
+              "file": "json/pt21/cfg_2x1.json"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

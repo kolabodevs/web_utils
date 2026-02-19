@@ -1,0 +1,156 @@
+ <!--
+@name         "Promontory FCH SPI Firmware Configuration Editor"
+@version      "1.0 - 2026-02-14"
+@description  "A javascript-based configuration editor for SPI loaded promontory firmware."
+@repository   "https://projects.kolabo.dev/ReProm/"
+@author       "@himko9 - me@himko.dev"
+@license      "GNU General Public License v3.0 or later" 
+ -->
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Prom Flash Image Tool</title>
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="icon" type="image/x-icon" href="favicon.ico">
+</head>
+<body>
+  <div class="window">
+    <!-- Title bar -->
+    <div class="titlebar">
+      <div class="title-left">
+        <img class="app-icon" src="favicon.ico" alt="AIT" />
+        <div class="title-text" id="title-text">AND Flash Image Tool</div>
+      </div>
+    </div>
+
+    <!-- Menu bar -->
+    <div class="menubar">
+      <button class="menu-item" id="menu-file" type="button">File</button>
+      <button class="menu-item" id="menu-build" type="button">Build</button>
+      <span class="menu-label menu-action" id="menu-help" role="button" tabindex="0">Help</span>
+    </div>
+
+    <!-- Toolbar row -->
+    <div class="toolbar">
+      <div class="tool-icons">
+        <button class="toolico action" id="load-firmware-btn" type="button" title="Load Firmware" aria-label="Load Firmware"></button>
+        <button class="toolico action" id="load-profile-btn" type="button" title="Load Profile" aria-label="Load Profile"></button>
+        <button class="toolico action" id="save-profile-btn" type="button" title="Save Profile" aria-label="Save Profile"></button>
+        <div class="toolsep" aria-hidden="true"></div>
+        <button class="toolico action" id="reset-all-btn" type="button" title="Reset All to Default"></button>
+        <button class="toolico action" id="custom-info-btn" type="button" title="Set Custom Info"></button>
+        <button class="toolico action" id="build-btn" type="button" title="Build SPI Image"></button>
+      </div>
+
+      <div class="toolbar-controls">
+        <div class="combo">
+          <select id="chipset-select" class="combo-select"></select>
+          <div class="combo-arrow" aria-hidden="true">
+            <svg class="combo-arrow-icon" viewBox="0 0 8 5" focusable="false">
+              <path d="M0 0h8L4 5z" fill="currentColor"/>
+            </svg>
+          </div>
+        </div>
+        <div class="combo small">
+          <select id="profile-select" class="combo-select"></select>
+          <div class="combo-arrow" aria-hidden="true">
+            <svg class="combo-arrow-icon" viewBox="0 0 8 5" focusable="false">
+              <path d="M0 0h8L4 5z" fill="currentColor"/>
+            </svg>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Main work area -->
+    <div class="workarea">
+      <!-- Left navigation -->
+      <aside class="sidebar" id="nav-list"></aside>
+
+      <!-- Right content -->
+      <main class="content">
+        <div class="content-scroll">
+          <input type="file" id="uefi-file" class="hidden-file" accept=".bin,.rom,.fd,.img,.cap,*/*" />
+          <input type="file" id="profile-file" class="hidden-file" accept=".json,application/json" />
+
+          <div class="page-title">
+            <div class="twisty down" aria-hidden="true"></div>
+            <div class="title" id="region-title">Regions</div>
+          </div>
+
+          <div class="gold-rule"></div>
+
+          <div id="region-container"></div>
+
+        </div>
+      </main>
+    </div>
+
+    <!-- Bottom log/status -->
+    <div class="logpane" id="logpane"></div>
+  </div>
+  <div class="modal hidden" id="custom-modal">
+    <div class="modal-backdrop"></div>
+    <div class="modal-card" role="dialog" aria-modal="true">
+      <div class="modal-title">Custom Info</div>
+      <div class="modal-body">
+        <label for="custom-info-input">Value (max 16 ASCII)</label>
+        <input type="text" id="custom-info-input" maxlength="16" />
+      </div>
+      <div class="modal-actions">
+        <button class="modal-btn ghost" id="custom-cancel">Cancel</button>
+        <button class="modal-btn primary" id="custom-save">Save</button>
+      </div>
+    </div>
+  </div>
+  <div class="modal hidden" id="cc-modal">
+    <div class="modal-backdrop"></div>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="cc-title">
+      <div class="modal-title" id="cc-title">Apply custom settings loaded from the SPI image?</div>
+      <div class="modal-body" id="cc-body">
+        This SPI image contains CC entries. Continue to load firmware and populate values?
+        Cancel will load firmware only.
+      </div>
+      <div class="modal-actions">
+        <button class="modal-btn primary" id="cc-cancel">Cancel</button>
+        <button class="modal-btn ghost" id="cc-continue">Continue</button>
+      </div>
+    </div>
+  </div>
+  <div class="modal hidden" id="confirm-modal">
+    <div class="modal-backdrop"></div>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+      <div class="modal-title" id="confirm-title">Confirm</div>
+      <div class="modal-body" id="confirm-body">
+        Current settings will be lost. Continue?
+      </div>
+      <div class="modal-actions">
+        <button class="modal-btn primary" id="confirm-cancel">Cancel</button>
+        <button class="modal-btn ghost" id="confirm-continue">Continue</button>
+      </div>
+    </div>
+  </div>
+  <div class="modal hidden" id="help-modal">
+    <div class="modal-backdrop"></div>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="help-title">
+      <div class="modal-title" id="help-title">Help</div>
+      <div class="modal-body help-body">
+        <p>Use this tool to build Promontory flash images.</p>
+        <ul>
+          <li>Select a chipset model</li>
+          <li>Load a UEFI image that contains the firmware binary</li>
+          <li>Load a profile to populate values (if applicable)</li>
+          <li>Edit register values to customize the firmware</li>
+          <li>Click build to generate the SPI image output</li>
+        </ul>
+      </div>
+      <div class="modal-actions">
+        <button class="modal-btn primary" id="help-close">OK</button>
+      </div>
+    </div>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>
