@@ -1,6 +1,6 @@
 /*
 @name         "Promontory FCH SPI Firmware Configuration Editor"
-@version      "1.0 - 2026-02-14"
+@version      "2.1 - 2026-03-03"
 @description  "A javascript-based configuration editor for SPI loaded promontory firmware."
 @repository   "https://projects.kolabo.dev/ReProm/"
 @author       "@himko9 - me@himko.dev"
@@ -20,13 +20,16 @@ const state = {
   optionKeys: new Map(),
   openGroups: new Set(),
   outputs: [],
+  firmwareFile: null,
   fwInfo: null,
   hasFirmwareFile: false,
+  dragDepth: 0,
   profileInitialized: false,
   lastProfileIndex: null
 };
 
 const els = {
+  appWindow: document.querySelector(".window"),
   chipsetSelect: document.getElementById("chipset-select"),
   profileSelect: document.getElementById("profile-select"),
   navList: document.getElementById("nav-list"),
@@ -532,7 +535,7 @@ function syncPresetSelect(input, item) {
     if (!opt.value || opt.value === "__custom__") {
       return;
     }
-    if (normalizeHex(opt.dataset.value) === current) {
+    if (matched === null && hexEquals(opt.dataset.value, current)) {
       matched = opt.value;
     }
   });
@@ -599,7 +602,7 @@ function extractProfileValues(data) {
   return Object.keys(out).length ? out : null;
 }
 
-function applyProfileValues(values, sourceName) {
+function applyProfileValues(values, sourceName, optionKeys) {
   resetAllValues();
   let applied = 0;
   let skipped = 0;
@@ -622,6 +625,14 @@ function applyProfileValues(values, sourceName) {
     }
     applied += 1;
   });
+  if (optionKeys && typeof optionKeys === "object") {
+    Object.entries(optionKeys).forEach(([code, key]) => {
+      if (!state.itemByCode.has(code) || !key) {
+        return;
+      }
+      state.optionKeys.set(code, key);
+    });
+  }
   syncVisibleInputs();
   const label = sourceName ? `: ${sourceName}` : "";
   logLine(`Profile loaded${label} (${applied} overrides, ${skipped} skipped).`);
@@ -1160,12 +1171,12 @@ function buildItemRow(item, labelPrefix) {
 
     const storedKey = state.optionKeys.get(item.code);
     const currentHex = normalizeHex(input.value);
-    const hasPreset = entries.some((entry) => normalizeHex(entry.value) === currentHex);
+    const hasPreset = entries.some((entry) => hexEquals(entry.value, currentHex));
     if (storedKey && entries.some((entry) => entry.key === storedKey)) {
       select.value = storedKey;
       input.classList.add("hidden-input");
     } else if (hasPreset) {
-      const entry = entries.find((opt) => normalizeHex(opt.value) === currentHex);
+      const entry = entries.find((opt) => hexEquals(opt.value, currentHex));
       if (entry) {
         select.value = entry.key;
         state.optionKeys.set(item.code, entry.key);
@@ -1625,7 +1636,7 @@ function collectXdata() {
     if (val === null) {
       return;
     }
-    if (![1, 2, 4].includes(size)) {
+    if (![1, 2, 3, 4].includes(size)) {
       return;
     }
     // changed may be overridden for multi-write options below
@@ -1666,7 +1677,7 @@ function collectXdata() {
           const wAddr = parseHex(write.address);
           const wValue = parseHex(write.value !== undefined ? write.value : write.data);
           const wSize = Number(write.size_bytes || 1);
-          if (wAddr !== null && wValue !== null && [1, 2, 4].includes(wSize)) {
+          if (wAddr !== null && wValue !== null && [1, 2, 3, 4].includes(wSize)) {
             const wSeg = (wAddr >>> 16) & 0xF;
             const wAddr16 = wAddr & 0xFFFF;
             entries.push({
@@ -1794,7 +1805,7 @@ function parseCcWriteConfig(def) {
   }
   const size = Number(def.size_bytes !== undefined ? def.size_bytes
     : (def.size !== undefined ? def.size : def.bytes));
-  if (![1, 2, 4].includes(size)) {
+  if (![1, 2, 3, 4].includes(size)) {
     return null;
   }
   let seg = null;
@@ -1850,7 +1861,7 @@ function collectSuffixEntry() {
 
 els.buildBtn.addEventListener("click", async () => {
   state.outputs = [];
-  const file = els.uefiFile.files[0];
+  const file = state.firmwareFile || els.uefiFile.files[0];
   if (!file || !state.hasFirmwareFile) {
     logLine("No input file selected.");
     return;
@@ -1928,13 +1939,14 @@ function triggerDownload(name, blob) {
   logLine(`Download started: ${name}`);
 }
 
-els.uefiFile.addEventListener("change", async () => {
-  const file = els.uefiFile.files[0];
+async function loadFirmwareFile(file) {
   updateTitle(file ? file.name : "");
   if (!file) {
+    state.firmwareFile = null;
     state.hasFirmwareFile = false;
     return;
   }
+  state.firmwareFile = file;
   state.hasFirmwareFile = true;
   logLine(`Loaded input image: ${file.name}`);
   try {
@@ -1982,6 +1994,11 @@ els.uefiFile.addEventListener("change", async () => {
   } catch (err) {
     logLine(`Firmware parse error: ${err.message}`);
   }
+}
+
+els.uefiFile.addEventListener("change", async () => {
+  const file = els.uefiFile.files[0];
+  await loadFirmwareFile(file);
 });
 
 function readU32LE(bytes, offset) {
@@ -2250,6 +2267,40 @@ function parseSpiImage(buffer) {
   };
 }
 
+function inferImportedOptionKey(item, fullAddr, entryValue, entrySize) {
+  if (!item || !Array.isArray(item.byte_fields)) {
+    return null;
+  }
+  const options = getByteFieldOptions(item);
+  if (!options.length) {
+    return null;
+  }
+  const exactWriteMatches = options.filter((opt) => {
+    if (!Array.isArray(opt.writes) || !opt.writes.length) {
+      return false;
+    }
+    return opt.writes.some((write) => {
+      const wAddr = parseHex(write.address);
+      const rawValue = write.value !== undefined ? write.value : write.data;
+      const wValue = parseHex(rawValue);
+      const wSize = Number(write.size_bytes || 1);
+      return wAddr === fullAddr && wValue === entryValue && wSize === entrySize;
+    });
+  });
+  if (exactWriteMatches.length === 1) {
+    return exactWriteMatches[0].key;
+  }
+  const valueHex = normalizeHex(entryValue);
+  const valueMatches = options.filter((opt) => hexEquals(opt.value, valueHex));
+  if (valueMatches.length && !item.required && hexEquals(valueHex, item.default || "")) {
+    return valueMatches[0].key;
+  }
+  if (valueMatches.length === 1) {
+    return valueMatches[0].key;
+  }
+  return null;
+}
+
 function applyCcEntries(entries, sourceName) {
   if (!Array.isArray(entries) || !entries.length) {
     logLine("No CC entries found in SPI header.");
@@ -2266,7 +2317,7 @@ function applyCcEntries(entries, sourceName) {
       return;
     }
     const size = Number(item.size_bytes || 1);
-    if (![1, 2, 4].includes(size)) {
+    if (![1, 2, 3, 4].includes(size)) {
       return;
     }
     const key = `${addr >>> 0}:${size}`;
@@ -2276,20 +2327,53 @@ function applyCcEntries(entries, sourceName) {
     addrIndex.get(key).push(item);
   });
 
+  const normalizedEntries = [];
+  for (let i = 0; i < entries.length; i++) {
+    const entry = entries[i];
+    const fullAddr = ((entry.seg & 0xF) << 16) | (entry.addr & 0xFFFF);
+    const threeByteKey = `${fullAddr >>> 0}:3`;
+    const next = entries[i + 1];
+    if (entry.size_bytes === 2 && addrIndex.has(threeByteKey) && next && next.size_bytes === 1) {
+      const nextFullAddr = ((next.seg & 0xF) << 16) | (next.addr & 0xFFFF);
+      if (nextFullAddr === (fullAddr + 2)) {
+        normalizedEntries.push({
+          seg: entry.seg,
+          addr: entry.addr,
+          value: (entry.value & 0xFFFF) | ((next.value & 0xFF) << 16),
+          size_bytes: 3
+        });
+        i += 1;
+        continue;
+      }
+    }
+    normalizedEntries.push(entry);
+  }
+
   const values = {};
+  const optionKeys = {};
   let matched = 0;
   let skipped = 0;
-  entries.forEach((entry) => {
+  const unmatchedEntries = [];
+  normalizedEntries.forEach((entry) => {
     const fullAddr = ((entry.seg & 0xF) << 16) | (entry.addr & 0xFFFF);
     const key = `${fullAddr >>> 0}:${entry.size_bytes}`;
     const items = addrIndex.get(key);
     if (!items || !items.length) {
       skipped += 1;
+      unmatchedEntries.push({
+        address: `0x${fullAddr.toString(16).toUpperCase()}`,
+        size_bytes: entry.size_bytes,
+        value: normalizeHex(entry.value)
+      });
       return;
     }
     const val = normalizeHex(entry.value);
     items.forEach((item) => {
       values[item.code] = val;
+      const optionKey = inferImportedOptionKey(item, fullAddr, entry.value, entry.size_bytes);
+      if (optionKey) {
+        optionKeys[item.code] = optionKey;
+      }
       matched += 1;
     });
   });
@@ -2298,9 +2382,12 @@ function applyCcEntries(entries, sourceName) {
     logLine("No CC entries matched registers in the current profile.");
     return;
   }
-  applyProfileValues(values, sourceName);
+  applyProfileValues(values, sourceName, optionKeys);
   const label = sourceName ? `: ${sourceName}` : "";
   logLine(`SPI CC entries applied${label} (${matched} matches, ${skipped} unmatched).`);
+  if (unmatchedEntries.length && typeof console !== "undefined" && typeof console.warn === "function") {
+    console.warn("Unmatched SPI CC entries:", unmatchedEntries);
+  }
 }
 
 function extractFirmware(buffer, options) {
@@ -2431,14 +2518,17 @@ function generateHeader(chipModel, customInfo, xdata, prefix, suffix) {
     if (value < 0 || value > 0xFFFFFFFF) {
       return null;
     }
-    if (!opMap[size]) {
+    if (![1, 2, 3, 4].includes(size)) {
+      return null;
+    }
+    const sizeLimit = Math.pow(2, size * 8) - 1;
+    if (value > sizeLimit) {
       return null;
     }
     const normalized = { seg, addr, value, size_bytes: size };
     if (entry.sequence !== undefined && entry.sequence !== null) {
       const seqList = normalizeSequenceValues(entry.sequence);
       if (seqList) {
-        const sizeLimit = Math.pow(2, size * 8) - 1;
         const filtered = seqList.filter((seq) => Number.isFinite(seq) && seq >= 0 && seq <= sizeLimit);
         if (filtered.length) {
           normalized.sequence = filtered;
@@ -2448,6 +2538,22 @@ function generateHeader(chipModel, customInfo, xdata, prefix, suffix) {
     return normalized;
   };
   const appendCcEntry = (head, entry) => {
+    if (entry.size_bytes === 3) {
+      const fullAddr = ((entry.seg & 0xF) << 16) | (entry.addr & 0xFFFF);
+      let next = appendCcEntry(head, {
+        seg: entry.seg,
+        addr: entry.addr,
+        value: entry.value & 0xFFFF,
+        size_bytes: 2
+      });
+      next = appendCcEntry(next, {
+        seg: ((fullAddr + 2) >>> 16) & 0xF,
+        addr: (fullAddr + 2) & 0xFFFF,
+        value: (entry.value >>> 16) & 0xFF,
+        size_bytes: 1
+      });
+      return next;
+    }
     const op = opMap[entry.size_bytes];
     if (!op) {
       return head;
@@ -2596,7 +2702,7 @@ const CRC_TABLE = (() => {
   }
   return table;
 })();
-logLine("Promontory Flash Image Tool. Version: Beta 1");
+logLine("Promontory Flash Image Tool. Version: Beta 2.1");
 logLine("For engineering use only.");
 logLine("Licensed under the GNU General Public License v3.0 or later.");
 logLine("Not responsible for the quality or reliability of this software.");
@@ -2609,14 +2715,76 @@ clearFirmwareSelection();
 window.addEventListener("pageshow", () => {
   clearFirmwareSelection();
 });
+
+function hasDraggedFiles(event) {
+  if (!event || !event.dataTransfer || !event.dataTransfer.types) {
+    return false;
+  }
+  return Array.from(event.dataTransfer.types).includes("Files");
+}
+
+function setDragActive(active) {
+  if (!els.appWindow) {
+    return;
+  }
+  els.appWindow.classList.toggle("drag-active", active);
+}
+
+if (els.appWindow) {
+  els.appWindow.addEventListener("dragenter", (event) => {
+    if (!hasDraggedFiles(event)) {
+      return;
+    }
+    event.preventDefault();
+    state.dragDepth += 1;
+    setDragActive(true);
+  });
+  els.appWindow.addEventListener("dragover", (event) => {
+    if (!hasDraggedFiles(event)) {
+      return;
+    }
+    event.preventDefault();
+    if (event.dataTransfer) {
+      event.dataTransfer.dropEffect = "copy";
+    }
+    setDragActive(true);
+  });
+  els.appWindow.addEventListener("dragleave", (event) => {
+    if (!hasDraggedFiles(event)) {
+      return;
+    }
+    event.preventDefault();
+    state.dragDepth = Math.max(0, state.dragDepth - 1);
+    if (!state.dragDepth) {
+      setDragActive(false);
+    }
+  });
+  els.appWindow.addEventListener("drop", async (event) => {
+    if (!hasDraggedFiles(event)) {
+      return;
+    }
+    event.preventDefault();
+    state.dragDepth = 0;
+    setDragActive(false);
+    const file = event.dataTransfer && event.dataTransfer.files ? event.dataTransfer.files[0] : null;
+    if (!file) {
+      return;
+    }
+    await loadFirmwareFile(file);
+  });
+}
+
 function updateTitle(filename) {
-  const base = "Prom Flash Image Tool";
+  const base = "AND Flash Image Tool";
   els.titleText.textContent = filename ? `${base} - ${filename}` : base;
 }
 
 function clearFirmwareSelection() {
   els.uefiFile.value = "";
+  state.firmwareFile = null;
   state.hasFirmwareFile = false;
+  state.dragDepth = 0;
+  setDragActive(false);
   state.fwInfo = null;
   updateTitle("");
 }
