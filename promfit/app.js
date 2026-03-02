@@ -2775,7 +2775,7 @@ if (els.appWindow) {
 }
 
 function updateTitle(filename) {
-  const base = "AND Flash Image Tool";
+  const base = "Prom Flash Image Tool";
   els.titleText.textContent = filename ? `${base} - ${filename}` : base;
 }
 
