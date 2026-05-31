@@ -18,6 +18,21 @@
           ]
         }
       ]
+    },
+    {
+      "name": "Promontory 19",
+      "profiles": [
+        {
+          "name": "PROM19.BCD",
+          "base": "json/pt19/cfg_base.json",
+          "variants": [
+            {
+              "name": "Default",
+              "file": "json/pt19/cfg_bcd.json"
+            }
+          ]
+        }
+      ]
     }
   ]
 }

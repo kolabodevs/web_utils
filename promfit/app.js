@@ -1,6 +1,6 @@
 /*
 @name         "Promontory FCH SPI Firmware Configuration Editor"
-@version      "2.1 - 2026-03-03"
+@version      "3.0 - 2026-06-01"
 @description  "A javascript-based configuration editor for SPI loaded promontory firmware."
 @repository   "https://projects.kolabo.dev/ReProm/"
 @author       "@himko9 - me@himko.dev"
@@ -216,6 +216,94 @@ function parseBitRange(bits) {
   return null;
 }
 
+function parseBitTargets(bits, fallbackBit, bitLimit = 32) {
+  const limit = Number.isFinite(bitLimit) ? Math.max(0, Math.min(32, Math.trunc(bitLimit))) : 32;
+  const targets = [];
+  const seen = new Set();
+  const addBit = (value) => {
+    const num = parseNumeric(value);
+    if (!Number.isFinite(num)) {
+      return;
+    }
+    const bit = Math.trunc(num);
+    if (bit < 0 || bit >= limit) {
+      return;
+    }
+    if (seen.has(bit)) {
+      return;
+    }
+    seen.add(bit);
+    targets.push(bit);
+  };
+  const addFromString = (text) => {
+    if (text === null || text === undefined) {
+      return;
+    }
+    const raw = String(text).trim();
+    if (!raw) {
+      return;
+    }
+    if (raw.includes(":")) {
+      const range = parseBitRange(raw);
+      if (range) {
+        for (let bit = range.lo; bit <= range.hi; bit++) {
+          addBit(bit);
+        }
+        return;
+      }
+    }
+    const splitTokens = raw.split(/[,&|/\\]+/).map((entry) => entry.trim()).filter(Boolean);
+    if (splitTokens.length > 1) {
+      splitTokens.forEach((entry) => addBit(entry));
+      return;
+    }
+    const matches = raw.match(/\d+/g);
+    if (matches && matches.length > 1) {
+      matches.forEach((entry) => addBit(entry));
+      return;
+    }
+    addBit(raw);
+  };
+
+  if (Array.isArray(bits)) {
+    bits.forEach((entry) => {
+      if (Array.isArray(entry)) {
+        entry.forEach((v) => addBit(v));
+      } else if (entry && typeof entry === "object") {
+        if (Object.prototype.hasOwnProperty.call(entry, "bits")) {
+          addFromString(entry.bits);
+        } else if (Object.prototype.hasOwnProperty.call(entry, "bit")) {
+          addBit(entry.bit);
+        }
+      } else {
+        addFromString(entry);
+      }
+    });
+  } else if (bits && typeof bits === "object") {
+    if (Object.prototype.hasOwnProperty.call(bits, "bits")) {
+      addFromString(bits.bits);
+    } else if (Object.prototype.hasOwnProperty.call(bits, "bit")) {
+      addBit(bits.bit);
+    }
+  } else {
+    addFromString(bits);
+  }
+
+  if (!targets.length && Number.isFinite(fallbackBit)) {
+    addBit(fallbackBit);
+  }
+  targets.sort((a, b) => a - b);
+  return targets;
+}
+
+function getBitGroupState(value, bits) {
+  if (!Array.isArray(bits) || !bits.length) {
+    return 0;
+  }
+  const safe = Number.isFinite(value) ? (value >>> 0) : 0;
+  return bits.every((bit) => ((safe >> bit) & 1) === 1) ? 1 : 0;
+}
+
 function getSubfieldRange(field, item, width) {
   const limit = (1 << width) - 1;
   let min = null;
@@ -320,6 +408,19 @@ function collectOptions(options) {
     .sort((a, b) => a.num - b.num);
 }
 
+function normalizeLinkedCodes(value) {
+  if (Array.isArray(value)) {
+    return value
+      .map((entry) => (entry === null || entry === undefined ? "" : String(entry).trim()))
+      .filter((entry) => entry.length > 0);
+  }
+  if (value === null || value === undefined) {
+    return [];
+  }
+  const text = String(value).trim();
+  return text ? [text] : [];
+}
+
 function collectByteFieldOptions(byteFields, item) {
   const entries = [];
   if (!Array.isArray(byteFields)) {
@@ -336,6 +437,7 @@ function collectByteFieldOptions(byteFields, item) {
       let sequence = opt.sequence;
       let writes = opt.writes;
       let required = opt.required;
+      let link = normalizeLinkedCodes(opt.link);
       if (opt.label && typeof opt.label === "object" && !Array.isArray(opt.label)) {
         if (opt.label.name !== undefined) {
           text = opt.label.name;
@@ -351,11 +453,14 @@ function collectByteFieldOptions(byteFields, item) {
         if (required === undefined) {
           required = opt.label.required;
         }
+        if (!link.length) {
+          link = normalizeLinkedCodes(opt.label.link);
+        }
       }
       if (text === undefined || text === null || text === "") {
         text = opt.value;
       }
-      entries.push({ value: opt.value, label: text, sequence, writes, required });
+      entries.push({ value: opt.value, label: text, sequence, writes, required, link });
       return;
     }
     Object.entries(opt).forEach(([value, label]) => {
@@ -366,6 +471,7 @@ function collectByteFieldOptions(byteFields, item) {
       let sequence = undefined;
       let writes = undefined;
       let required = undefined;
+      let link = [];
       if (label && typeof label === "object" && !Array.isArray(label)) {
         if (label.name !== undefined) {
           text = label.name;
@@ -375,11 +481,12 @@ function collectByteFieldOptions(byteFields, item) {
         sequence = label.sequence;
         writes = label.writes;
         required = label.required;
+        link = normalizeLinkedCodes(label.link);
       }
       if (text === undefined || text === null || text === "") {
         text = value;
       }
-      entries.push({ value, label: text, sequence, writes, required });
+      entries.push({ value, label: text, sequence, writes, required, link });
     });
   });
   const inferValueFromWrites = (writes) => {
@@ -434,7 +541,8 @@ function collectByteFieldOptions(byteFields, item) {
         num,
         sequence: entry.sequence,
         writes: entry.writes,
-        required: entry.required
+        required: entry.required,
+        link: normalizeLinkedCodes(entry.link)
       };
     })
     .filter(Boolean);
@@ -470,40 +578,88 @@ function getByteFieldOptions(item) {
 }
 
 function parseBitFieldDescriptor(desc) {
-  const normalizeLabel = (value) => {
+  const normalizeState = (value) => {
     if (value && typeof value === "object" && !Array.isArray(value)) {
       const label = value.name !== undefined ? value.name
         : (value.label !== undefined ? value.label : "");
-      return { label, sequence: value.sequence };
+      return { label, sequence: value.sequence, link: normalizeLinkedCodes(value.link) };
     }
-    return { label: value, sequence: undefined };
+    return { label: value, sequence: undefined, link: [] };
   };
+  const parseStatesFromObject = (obj) => {
+    if (!obj || typeof obj !== "object" || Array.isArray(obj)) {
+      return [];
+    }
+    if (Array.isArray(obj.states)) {
+      return obj.states.map((state) => normalizeState(state));
+    }
+    const numericKeys = Object.keys(obj)
+      .filter((key) => /^\d+$/.test(key))
+      .sort((a, b) => Number(a) - Number(b));
+    if (numericKeys.length) {
+      return numericKeys.map((key) => normalizeState(obj[key]));
+    }
+    if (Object.prototype.hasOwnProperty.call(obj, "name")
+      || Object.prototype.hasOwnProperty.call(obj, "label")
+      || Object.prototype.hasOwnProperty.call(obj, "sequence")
+      || Object.prototype.hasOwnProperty.call(obj, "link")) {
+      return [normalizeState(obj)];
+    }
+    return [];
+  };
+  let states = [];
+  let rawBits;
   if (Array.isArray(desc)) {
-    const first = normalizeLabel(desc[0]);
-    const second = normalizeLabel(desc[1]);
+    states = desc.map((state) => normalizeState(state));
+  } else if (desc && typeof desc === "object") {
+    if (Object.prototype.hasOwnProperty.call(desc, "bits")) {
+      rawBits = desc.bits;
+    } else if (Object.prototype.hasOwnProperty.call(desc, "bit")) {
+      rawBits = desc.bit;
+    }
+    states = parseStatesFromObject(desc);
+  } else if (typeof desc === "string" || typeof desc === "number") {
+    states = [normalizeState(desc)];
+  }
+  states = states.filter((state) => state !== null && state !== undefined);
+  if (!states.length) {
+    states = [{ label: "", sequence: undefined, link: [] }];
+  }
+  const first = states[0];
+  const second = states[1] || first;
+  return {
+    states,
+    label0: first.label,
+    label1: second.label !== undefined ? second.label : first.label,
+    sequence0: first.sequence,
+    sequence1: second.sequence,
+    link0: first.link,
+    link1: second.link,
+    rawBits
+  };
+}
+
+function getBitFieldStateForValue(desc, bitValue) {
+  if (!desc) {
+    return { label: "", sequence: undefined, link: [] };
+  }
+  if (Array.isArray(desc.states) && desc.states.length) {
+    const index = bitValue ? 1 : 0;
+    const selected = desc.states[Math.min(index, desc.states.length - 1)] || desc.states[0];
     return {
-      label0: first.label,
-      label1: second.label !== undefined ? second.label : first.label,
-      sequence0: first.sequence,
-      sequence1: second.sequence
+      label: selected.label,
+      sequence: selected.sequence,
+      link: normalizeLinkedCodes(selected.link)
     };
   }
-  if (desc && typeof desc === "object") {
-    const firstRaw = desc[0] !== undefined ? desc[0] : desc["0"];
-    const secondRaw = desc[1] !== undefined ? desc[1] : desc["1"];
-    const first = normalizeLabel(firstRaw);
-    const second = normalizeLabel(secondRaw);
-    return {
-      label0: first.label,
-      label1: second.label !== undefined ? second.label : first.label,
-      sequence0: first.sequence,
-      sequence1: second.sequence
-    };
-  }
-  if (typeof desc === "string" || typeof desc === "number") {
-    return { label0: desc, label1: desc, sequence0: undefined, sequence1: undefined };
-  }
-  return { label0: "", label1: "", sequence0: undefined, sequence1: undefined };
+  const selected = bitValue
+    ? { label: desc.label1, sequence: desc.sequence1, link: desc.link1 }
+    : { label: desc.label0, sequence: desc.sequence0, link: desc.link0 };
+  return {
+    label: selected.label,
+    sequence: selected.sequence,
+    link: normalizeLinkedCodes(selected.link)
+  };
 }
 
 function getBitFieldMeta(item) {
@@ -513,7 +669,12 @@ function getBitFieldMeta(item) {
   if (item._bitFieldMeta) {
     return item._bitFieldMeta;
   }
-  const meta = item.bit_fields.map((desc) => parseBitFieldDescriptor(desc));
+  const bitLimit = item.size_bytes ? Math.min(item.size_bytes * 8, 32) : 32;
+  const meta = item.bit_fields.map((desc, index) => {
+    const parsed = parseBitFieldDescriptor(desc);
+    parsed.bits = parseBitTargets(parsed.rawBits, index, bitLimit);
+    return parsed;
+  });
   item._bitFieldMeta = meta;
   return meta;
 }
@@ -672,6 +833,41 @@ function itemKey(node) {
   return node.code || node.name || "";
 }
 
+function itemAllowsWrite(item) {
+  if (!item || typeof item !== "object") {
+    return true;
+  }
+  if (item.access === undefined || item.access === null) {
+    return true;
+  }
+  const access = String(item.access).trim().toUpperCase();
+  if (!access) {
+    return true;
+  }
+  return access.includes("W");
+}
+
+function isInternalItem(node) {
+  if (!node || typeof node !== "object") {
+    return false;
+  }
+  const name = typeof node.name === "string" ? node.name.trim() : "";
+  return name.startsWith("[Internal]");
+}
+
+function groupHasVisibleItems(group) {
+  if (!group || typeof group !== "object") {
+    return false;
+  }
+  if (Array.isArray(group.items) && group.items.some((item) => !isInternalItem(item))) {
+    return true;
+  }
+  if (Array.isArray(group.groups) && group.groups.some((child) => groupHasVisibleItems(child))) {
+    return true;
+  }
+  return false;
+}
+
 function filterGroupTree(groups, hideGroups, hideItems) {
   if (!Array.isArray(groups)) {
     return [];
@@ -758,6 +954,15 @@ function applyVariant(baseData, variantData, variantMeta) {
     merged.groups = mergeGroups(merged.groups || [], variantData.groups);
   }
   if (variantData && typeof variantData === "object") {
+    if (variantData.cc_prefix !== undefined) {
+      merged.cc_prefix = variantData.cc_prefix;
+    }
+    if (variantData.ccPrefix !== undefined) {
+      merged.ccPrefix = variantData.ccPrefix;
+    }
+    if (variantData.prefix !== undefined) {
+      merged.prefix = variantData.prefix;
+    }
     if (variantData.cc_suffix !== undefined) {
       merged.cc_suffix = variantData.cc_suffix;
     }
@@ -1049,11 +1254,11 @@ function renderGroup(group) {
   els.regionContainer.innerHTML = "";
   els.regionTitle.textContent = group.name || group.code || "Regions";
   const regions = [];
-  if (group.items && group.items.length) {
+  if (group.items && group.items.some((item) => !isInternalItem(item))) {
     regions.push({ name: `${group.name || group.code} Registers`, items: group.items, groups: [] });
   }
   if (group.groups && group.groups.length) {
-    regions.push(...group.groups);
+    regions.push(...group.groups.filter((child) => groupHasVisibleItems(child)));
   }
   if (!regions.length) {
     regions.push({ name: group.name || group.code || "Registers", items: [], groups: [] });
@@ -1101,11 +1306,17 @@ function appendGroupRows(grid, group, prefix) {
   const labelPrefix = prefix ? `${prefix} / ` : "";
   if (group.items && group.items.length) {
     group.items.forEach((item) => {
+      if (isInternalItem(item)) {
+        return;
+      }
       grid.appendChild(buildItemRow(item, labelPrefix));
     });
   }
   if (group.groups && group.groups.length) {
     group.groups.forEach((child) => {
+      if (!groupHasVisibleItems(child)) {
+        return;
+      }
       const rule = document.createElement("div");
       rule.className = "gold-rule grid-rule";
       grid.appendChild(rule);
@@ -1377,31 +1588,34 @@ function buildItemRow(item, labelPrefix) {
       const list = document.createElement("div");
       list.className = "bit-list";
       const baseVal = (parseHex(normalizeHex(input.value || item.default || "")) || 0) >>> 0;
-      const bitCount = item.size_bytes ? Math.min(item.size_bytes * 8, 32) : Math.min(item.bit_fields.length, 32);
       const checkboxes = [];
 
       const meta = getBitFieldMeta(item);
 
-      for (let bit = 0; bit < bitCount; bit++) {
-        const desc = meta[bit] || { label0: "", label1: "" };
+      meta.forEach((desc, index) => {
+        const bits = parseBitTargets(desc && desc.bits, index, 32);
+        if (!bits.length) {
+          return;
+        }
         const label0Raw = desc.label0;
         const label1Raw = desc.label1 !== undefined ? desc.label1 : label0Raw;
         const label0Text = label0Raw !== undefined && label0Raw !== null ? String(label0Raw) : "";
         const label1Text = label1Raw !== undefined && label1Raw !== null ? String(label1Raw) : label0Text;
         if (label0Text && /reserved/i.test(label0Text) && (!label1Text || label1Text === label0Text)) {
-          continue;
+          return;
         }
-        const label0 = label0Text || `Bit ${bit}: 0`;
+        const bitTag = bits.length === 1 ? `Bit ${bits[0]}` : `Bits ${bits.join("&")}`;
+        const label0 = label0Text || `${bitTag}: 0`;
         const label1 = label1Text || label0;
 
         const row = document.createElement("label");
         row.className = "bit-item";
         const cb = document.createElement("input");
         cb.type = "checkbox";
-        cb.dataset.bit = String(bit);
+        cb.dataset.bits = bits.join(",");
         cb.dataset.label0 = label0;
         cb.dataset.label1 = label1;
-        cb.checked = ((baseVal >> bit) & 1) === 1;
+        cb.checked = getBitGroupState(baseVal, bits) === 1;
         const text = document.createElement("span");
         text.textContent = cb.checked ? label1 : label0;
         cb._labelSpan = text;
@@ -1409,17 +1623,19 @@ function buildItemRow(item, labelPrefix) {
         row.appendChild(text);
         list.appendChild(row);
         checkboxes.push(cb);
-      }
+      });
 
       const updateFromBits = () => {
         let value = Number.isFinite(input._bitBaseVal) ? input._bitBaseVal : baseVal;
         checkboxes.forEach((cb) => {
-          const bit = Number(cb.dataset.bit);
-          if (cb.checked) {
-            value |= (1 << bit);
-          } else {
-            value &= ~(1 << bit);
-          }
+          const bits = parseBitTargets(cb.dataset.bits || cb.dataset.bit, undefined, 32);
+          bits.forEach((bit) => {
+            if (cb.checked) {
+              value |= (1 << bit);
+            } else {
+              value &= ~(1 << bit);
+            }
+          });
           if (cb._labelSpan) {
             cb._labelSpan.textContent = cb.checked ? cb.dataset.label1 : cb.dataset.label0;
           }
@@ -1530,9 +1746,9 @@ function handleInputChange(input, item) {
   if (!fromBits && input._bitCheckboxes) {
     const baseVal = Number.isFinite(input._bitBaseVal) ? input._bitBaseVal : 0;
     input._bitCheckboxes.forEach((cb) => {
-      const bit = Number(cb.dataset.bit);
+      const bits = parseBitTargets(cb.dataset.bits || cb.dataset.bit, undefined, 32);
       const source = valNum === null ? baseVal : valNum;
-      cb.checked = ((source >> bit) & 1) === 1;
+      cb.checked = getBitGroupState(source, bits) === 1;
       if (cb._labelSpan) {
         cb._labelSpan.textContent = cb.checked ? cb.dataset.label1 : cb.dataset.label0;
       }
@@ -1605,9 +1821,199 @@ function isValueValid(item, valStr) {
 
 function collectXdata() {
   const entries = [];
+  const linkForcedCodes = new Set();
+
+  const resolveEffectiveHexValue = (item) => {
+    const defaultVal = normalizeHex(item.default || "");
+    const required = Boolean(item.required);
+    let currentVal = state.values.get(item.code) || "";
+    if (!currentVal) {
+      if (defaultVal) {
+        currentVal = defaultVal;
+      } else if (!required) {
+        return "";
+      } else {
+        currentVal = "0x0";
+      }
+    }
+    if (!currentVal) {
+      currentVal = defaultVal || "0x0";
+    }
+    return normalizeHex(currentVal);
+  };
+
+  const sizeLimitForBytes = (size) => {
+    if (!Number.isFinite(size) || size < 1 || size > 4) {
+      return 0;
+    }
+    return Math.pow(2, size * 8) - 1;
+  };
+
+  const normalizeValueForSize = (value, size) => {
+    const limit = sizeLimitForBytes(size);
+    if (!Number.isFinite(value)) {
+      return 0;
+    }
+    return (value >>> 0) & limit;
+  };
+
+  const writeAddrKey = (addr, size) => `${addr >>> 0}:${size}`;
+
+  const firstPresentField = (obj, keys) => {
+    if (!obj || typeof obj !== "object") {
+      return undefined;
+    }
+    for (const key of keys) {
+      if (Object.prototype.hasOwnProperty.call(obj, key)) {
+        return obj[key];
+      }
+    }
+    return undefined;
+  };
+
+  const mergeSubfieldValue = (item, baseValue, sourceValue, size) => {
+    let merged = normalizeValueForSize(baseValue, size);
+    const src = normalizeValueForSize(sourceValue, size);
+    if (!(item && item.value_type === "subfield" && Array.isArray(item.sub_fields) && item.sub_fields.length)) {
+      return src;
+    }
+    item.sub_fields.forEach((field) => {
+      const info = parseBitRange(field.bits);
+      if (!info) {
+        return;
+      }
+      const fieldMask = normalizeValueForSize(info.mask, size);
+      const sourceBits = src & fieldMask;
+      merged = normalizeValueForSize((merged & (~fieldMask >>> 0)) | sourceBits, size);
+    });
+    return merged;
+  };
+
+  // Snapshot effective values from current UI/default state for masked writes.
+  const effectiveValueByAddrSize = new Map();
   state.items.forEach((item) => {
     const addr = parseHex(item.address);
     if (addr === null) {
+      return;
+    }
+    if (!itemAllowsWrite(item)) {
+      return;
+    }
+    const size = Number(item.size_bytes || 1);
+    if (![1, 2, 3, 4].includes(size)) {
+      return;
+    }
+    const currentHex = resolveEffectiveHexValue(item);
+    const currentVal = parseHex(currentHex);
+    if (currentVal === null) {
+      return;
+    }
+    effectiveValueByAddrSize.set(writeAddrKey(addr, size), normalizeValueForSize(currentVal, size));
+  });
+
+  // Tracks already-emitted writes in order so later masked writes can depend on earlier entries.
+  const plannedValueByAddrSize = new Map();
+
+  // Resolve all bitfield-linked items first so linked writes can be forced even if unchanged.
+  state.items.forEach((item) => {
+    if (item.value_type !== "bitfield" || !Array.isArray(item.bit_fields)) {
+      return;
+    }
+    const currentHex = resolveEffectiveHexValue(item);
+    const currentVal = parseHex(currentHex);
+    if (currentVal === null) {
+      return;
+    }
+    const defaultHex = normalizeHex(item.default || "");
+    const defaultVal = parseHex(defaultHex);
+    const itemRequired = Boolean(item.required);
+    const itemChanged = !hexEquals(currentHex, item.default || "");
+    const baseVal = currentVal >>> 0;
+    const meta = getBitFieldMeta(item);
+    meta.forEach((desc, index) => {
+      if (!desc) {
+        return;
+      }
+      const bits = parseBitTargets(desc.bits, index, item.size_bytes ? Math.min(item.size_bytes * 8, 32) : 32);
+      if (!bits.length) {
+        return;
+      }
+      const bitSet = getBitGroupState(baseVal, bits) === 1;
+      if (!itemRequired) {
+        if (defaultVal !== null) {
+          const defaultBitSet = getBitGroupState(defaultVal >>> 0, bits) === 1;
+          if (defaultBitSet === bitSet) {
+            return;
+          }
+        } else if (!itemChanged) {
+          return;
+        }
+      }
+      const selectedBitState = getBitFieldStateForValue(desc, bitSet ? 1 : 0);
+      const links = selectedBitState.link;
+      if (!Array.isArray(links) || !links.length) {
+        return;
+      }
+      links.forEach((code) => {
+        if (state.itemByCode.has(code)) {
+          linkForcedCodes.add(code);
+        }
+      });
+    });
+  });
+  // Resolve selected byte-field option links as additional forced writes.
+  state.items.forEach((item) => {
+    if (!item.byte_fields || !Array.isArray(item.byte_fields)) {
+      return;
+    }
+    const options = getByteFieldOptions(item);
+    if (!options.length) {
+      return;
+    }
+    const currentHex = resolveEffectiveHexValue(item);
+    let selectedOption = null;
+    const key = state.optionKeys.get(item.code);
+    if (key) {
+      selectedOption = options.find((opt) => opt.key === key) || null;
+    }
+    if (!selectedOption && currentHex) {
+      selectedOption = options.find((opt) => hexEquals(opt.value, currentHex)) || null;
+    }
+    if (!selectedOption || !Array.isArray(selectedOption.link) || !selectedOption.link.length) {
+      return;
+    }
+    if (!item.required && hexEquals(currentHex, item.default || "")) {
+      return;
+    }
+    selectedOption.link.forEach((code) => {
+      if (state.itemByCode.has(code)) {
+        linkForcedCodes.add(code);
+      }
+    });
+  });
+  // Resolve item-level links (all value types, including subfield) when item is changed/required.
+  state.items.forEach((item) => {
+    const links = normalizeLinkedCodes(item.link);
+    if (!links.length) {
+      return;
+    }
+    const currentHex = resolveEffectiveHexValue(item);
+    if (!item.required && hexEquals(currentHex, item.default || "")) {
+      return;
+    }
+    links.forEach((code) => {
+      if (state.itemByCode.has(code)) {
+        linkForcedCodes.add(code);
+      }
+    });
+  });
+
+  state.items.forEach((item) => {
+    const addr = parseHex(item.address);
+    if (addr === null) {
+      return;
+    }
+    if (!itemAllowsWrite(item)) {
       return;
     }
     const size = Number(item.size_bytes || 1);
@@ -1648,6 +2054,9 @@ function collectXdata() {
       if (options.length) {
         const key = state.optionKeys.get(item.code);
         selectedOption = key ? options.find((opt) => opt.key === key) : null;
+        if (!selectedOption) {
+          selectedOption = options.find((opt) => hexEquals(opt.value, currentVal)) || null;
+        }
         if (selectedOption && selectedOption.writes && Array.isArray(selectedOption.writes)) {
           const defaultNum = defaultVal ? parseHex(defaultVal) : null;
           const isDefaultWrite = (() => {
@@ -1667,17 +2076,75 @@ function collectXdata() {
         }
       }
     }
-    const effectiveRequired = required || Boolean(selectedOption && selectedOption.required);
+    const effectiveRequired = required || Boolean(selectedOption && selectedOption.required) || linkForcedCodes.has(item.code);
     if (!changed && !effectiveRequired) {
       return;
     }
     if (item.byte_fields && Array.isArray(item.byte_fields)) {
       if (selectedOption && selectedOption.writes && Array.isArray(selectedOption.writes)) {
+        const selectedOptionBase = parseHexValue(selectedOption.value);
         selectedOption.writes.forEach((write) => {
           const wAddr = parseHex(write.address);
-          const wValue = parseHex(write.value !== undefined ? write.value : write.data);
           const wSize = Number(write.size_bytes || 1);
-          if (wAddr !== null && wValue !== null && [1, 2, 3, 4].includes(wSize)) {
+          if (wAddr !== null && [1, 2, 3, 4].includes(wSize)) {
+            const writeKey = writeAddrKey(wAddr, wSize);
+            const hasMaskSet = firstPresentField(write, ["mask_set", "set_mask", "or_mask"]) !== undefined;
+            const hasMaskClear = firstPresentField(write, ["mask_clear", "clear_mask", "andn_mask"]) !== undefined;
+            const hasMaskAssign = firstPresentField(write, ["mask", "write_mask"]) !== undefined;
+
+            const rawDirectValue = firstPresentField(write, ["value", "data"]);
+            let wValue = parseHexValue(rawDirectValue);
+
+            if (hasMaskSet || hasMaskClear || hasMaskAssign) {
+              const explicitBase = parseHexValue(firstPresentField(write, ["base", "base_value"]));
+              let baseValue = explicitBase;
+              if (baseValue === null) {
+                if (plannedValueByAddrSize.has(writeKey)) {
+                  baseValue = plannedValueByAddrSize.get(writeKey);
+                } else if (effectiveValueByAddrSize.has(writeKey)) {
+                  baseValue = effectiveValueByAddrSize.get(writeKey);
+                } else if (selectedOptionBase !== null && wAddr === addr) {
+                  // If no prior value exists, allow option byte value to seed masked writes
+                  // targeting this item's own address.
+                  baseValue = selectedOptionBase;
+                } else if (wValue !== null) {
+                  baseValue = wValue;
+                } else {
+                  baseValue = 0;
+                }
+              }
+              let nextValue = normalizeValueForSize(baseValue, wSize);
+
+              const maskAssign = parseHexValue(firstPresentField(write, ["mask", "write_mask"]));
+              if (maskAssign !== null) {
+                const assignMask = normalizeValueForSize(maskAssign, wSize);
+                const maskedRaw = firstPresentField(write, ["mask_value", "masked_value", "value", "data"]);
+                const maskedValue = normalizeValueForSize(parseHexValue(maskedRaw) || 0, wSize);
+                nextValue = normalizeValueForSize((nextValue & (~assignMask >>> 0)) | (maskedValue & assignMask), wSize);
+              }
+
+              const maskClear = parseHexValue(firstPresentField(write, ["mask_clear", "clear_mask", "andn_mask"]));
+              if (maskClear !== null) {
+                const clearMask = normalizeValueForSize(maskClear, wSize);
+                nextValue = normalizeValueForSize(nextValue & (~clearMask >>> 0), wSize);
+              }
+
+              const maskSet = parseHexValue(firstPresentField(write, ["mask_set", "set_mask", "or_mask"]));
+              if (maskSet !== null) {
+                const setMask = normalizeValueForSize(maskSet, wSize);
+                nextValue = normalizeValueForSize(nextValue | setMask, wSize);
+              }
+              wValue = nextValue;
+            } else if (wValue !== null) {
+              wValue = normalizeValueForSize(wValue, wSize);
+            }
+
+            if (wValue !== null) {
+              plannedValueByAddrSize.set(writeKey, wValue);
+              effectiveValueByAddrSize.set(writeKey, wValue);
+            }
+
+            if (wValue !== null) {
             const wSeg = (wAddr >>> 16) & 0xF;
             const wAddr16 = wAddr & 0xFFFF;
             entries.push({
@@ -1687,6 +2154,7 @@ function collectXdata() {
               size_bytes: wSize,
               code: `${item.code}_write_${entries.length}`
             });
+            }
           }
         });
         return;
@@ -1715,7 +2183,14 @@ function collectXdata() {
       }
     }
     if (item.value_type === "subfield" && Array.isArray(item.sub_fields) && item.sub_fields.length) {
-      const baseVal = val >>> 0;
+      const writeKey = writeAddrKey(addr, size);
+      let baseVal = val >>> 0;
+      if (plannedValueByAddrSize.has(writeKey)) {
+        baseVal = plannedValueByAddrSize.get(writeKey);
+      } else if (effectiveValueByAddrSize.has(writeKey)) {
+        baseVal = effectiveValueByAddrSize.get(writeKey);
+      }
+      baseVal = mergeSubfieldValue(item, baseVal, val, size);
       item.sub_fields.forEach((field) => {
         const info = parseBitRange(field.bits);
         if (!info) {
@@ -1749,45 +2224,59 @@ function collectXdata() {
     if (item.value_type === "bitfield" && Array.isArray(item.bit_fields)) {
       const baseVal = val >>> 0;
       const meta = getBitFieldMeta(item);
-      const bitCount = item.size_bytes
-        ? Math.min(item.size_bytes * 8, 32)
-        : Math.min(meta.length, 32);
-      for (let bit = 0; bit < bitCount; bit++) {
-        const desc = meta[bit];
+      meta.forEach((desc, index) => {
         if (!desc) {
-          continue;
+          return;
         }
-        const current = (baseVal >> bit) & 1;
-        const seqSource = current ? desc.sequence1 : desc.sequence0;
+        const bits = parseBitTargets(desc.bits, index, item.size_bytes ? Math.min(item.size_bytes * 8, 32) : 32);
+        if (!bits.length) {
+          return;
+        }
+        const current = getBitGroupState(baseVal, bits);
+        const selectedState = getBitFieldStateForValue(desc, current);
+        const seqSource = selectedState.sequence;
         if (seqSource === undefined || seqSource === null || seqSource === "") {
-          continue;
+          return;
         }
         const seqList = normalizeSequenceValues(seqSource);
         if (!seqList) {
-          continue;
+          return;
         }
         seqList.forEach((seqVal) => {
           if (seqVal !== 0 && seqVal !== 1) {
             return;
           }
           let next = baseVal;
-          if (seqVal === 1) {
-            next |= (1 << bit);
-          } else {
-            next &= ~(1 << bit);
-          }
+          bits.forEach((bit) => {
+            if (seqVal === 1) {
+              next |= (1 << bit);
+            } else {
+              next &= ~(1 << bit);
+            }
+          });
           if (next >= 0 && next <= sizeLimit) {
             sequenceValues.push(next >>> 0);
           }
         });
-      }
+      });
     }
     const seg = (addr >>> 16) & 0xF;
     const addr16 = addr & 0xFFFF;
+    const writeKey = writeAddrKey(addr, size);
+    let finalVal = val;
+    if (item.value_type === "subfield" && Array.isArray(item.sub_fields) && item.sub_fields.length) {
+      let baseForMerge = val;
+      if (plannedValueByAddrSize.has(writeKey)) {
+        baseForMerge = plannedValueByAddrSize.get(writeKey);
+      } else if (effectiveValueByAddrSize.has(writeKey)) {
+        baseForMerge = effectiveValueByAddrSize.get(writeKey);
+      }
+      finalVal = mergeSubfieldValue(item, baseForMerge, val, size);
+    }
     const entry = {
       seg,
       addr: addr16,
-      value: val,
+      value: finalVal,
       size_bytes: size,
       code: item.code
     };
@@ -1795,6 +2284,8 @@ function collectXdata() {
       entry.sequence = sequenceValues;
     }
     entries.push(entry);
+    plannedValueByAddrSize.set(writeKey, normalizeValueForSize(finalVal, size));
+    effectiveValueByAddrSize.set(writeKey, normalizeValueForSize(finalVal, size));
   });
   return entries;
 }
@@ -1840,46 +2331,78 @@ function parseCcWriteConfig(def) {
   };
 }
 
-function collectPrefixEntry() {
+function parseCcWriteConfigs(def) {
+  if (Array.isArray(def)) {
+    const entries = [];
+    def.forEach((entryDef) => {
+      const entry = parseCcWriteConfig(entryDef);
+      if (entry) {
+        entries.push(entry);
+      }
+    });
+    return entries;
+  }
+  const entry = parseCcWriteConfig(def);
+  return entry ? [entry] : [];
+}
+
+function collectPrefixEntries() {
   if (!state.registers || typeof state.registers !== "object") {
-    return null;
+    return [];
   }
   const raw = state.registers.cc_prefix !== undefined ? state.registers.cc_prefix
     : (state.registers.ccPrefix !== undefined ? state.registers.ccPrefix : state.registers.prefix);
-  return parseCcWriteConfig(raw);
+  return parseCcWriteConfigs(raw);
 }
 
-function collectSuffixEntry() {
+function collectSuffixEntries() {
   if (!state.registers || typeof state.registers !== "object") {
-    return null;
+    return [];
   }
   const raw = state.registers.cc_suffix !== undefined ? state.registers.cc_suffix
     : (state.registers.ccSuffix !== undefined ? state.registers.ccSuffix : state.registers.suffix);
-  return parseCcWriteConfig(raw);
+  return parseCcWriteConfigs(raw);
 }
 
 
 els.buildBtn.addEventListener("click", async () => {
   state.outputs = [];
   const file = state.firmwareFile || els.uefiFile.files[0];
-  if (!file || !state.hasFirmwareFile) {
+  const debugConfig = getDebugBuildConfig();
+  const useDebugBuild = (!file || !state.hasFirmwareFile) && debugConfig.enabled;
+  if (debugConfig.enabled && !debugConfig.model) {
+    logLine(`Debug build error: ${debugConfig.error}`);
+    return;
+  }
+  if ((!file || !state.hasFirmwareFile) && !useDebugBuild) {
     logLine("No input file selected.");
     return;
   }
-  const buffer = await file.arrayBuffer();
   const xdata = collectXdata();
-  const prefix = collectPrefixEntry();
-  const suffix = collectSuffixEntry();
+  if (debugConfig.enabled && debugConfig.ccEntries.length) {
+    xdata.push(...debugConfig.ccEntries);
+  }
+  const prefix = debugConfig.noPrefix ? [] : collectPrefixEntries();
+  const suffix = debugConfig.noSuffix ? [] : collectSuffixEntries();
   const seqCount = xdata.reduce((acc, entry) => acc + (entry.sequence !== undefined ? 1 : 0), 0);
   const extra = [];
   if (seqCount) {
     extra.push(`${seqCount} sequenced`);
   }
-  if (prefix) {
-    extra.push("1 prefix");
+  if (prefix.length) {
+    extra.push(`${prefix.length} prefix`);
   }
-  if (suffix) {
-    extra.push("1 suffix");
+  if (suffix.length) {
+    extra.push(`${suffix.length} suffix`);
+  }
+  if (debugConfig.enabled && debugConfig.ccEntries.length) {
+    extra.push(`${debugConfig.ccEntries.length} URL debug`);
+  }
+  if (debugConfig.noPrefix) {
+    extra.push("no prefix");
+  }
+  if (debugConfig.noSuffix) {
+    extra.push("no suffix");
   }
   const extraText = extra.length ? ` (${extra.join(", ")})` : "";
   logLine(`Building with ${xdata.length} CC entries${extraText}.`);
@@ -1887,40 +2410,52 @@ els.buildBtn.addEventListener("click", async () => {
     ? state.currentProfile.name.replace(/[\s\-]+/g, "_") 
     : "";
   let outputs = [];
-  const spiImage = parseSpiImage(buffer);
-  if (spiImage && !spiImage.error) {
-    if (!spiImage.footerOk) {
-      logLine("SPI footer signature mismatch. Rebuilding with correct footer.");
-    }
-    const info = spiImage.fwInfo || { fwDate: "UNKNOWN" };
-    const fwDate = info.fwDate || "UNKNOWN";
-    const header = generateHeader(spiImage.chipModel, state.customInfo || "", xdata, prefix, suffix);
-    const bodyChecksum = sumBytes(spiImage.body) & 0xFF;
-    const bodyCrc = crc32(spiImage.body);
-    let outData = concatBytes([
-      header,
-      packU32LE(spiImage.bodySize),
-      spiImage.body,
-      chipFooter(spiImage.chipModel),
-      new Uint8Array([bodyChecksum]),
-      packU32LE(bodyCrc)
-    ]);
-    const pad = (16 - (outData.length % 16)) % 16;
-    if (pad) {
-      outData = concatBytes([outData, new Uint8Array(pad).fill(0xFF)]);
-    }
-    const profileSuffix = profileName ? `${profileName}` : "";
-    const name = `${profileSuffix}_${fwDate}_SPI.bin`;
-    outputs = [{ name, data: outData }];
-  } else {
-    outputs = extractFirmware(buffer, {
-      ignoreChecksum: false,
+  if (useDebugBuild) {
+    logLine(`Debug mode enabled (model=${debugConfig.model}), generating 0xFF firmware body.`);
+    outputs = buildDebugImage(debugConfig.model, {
       customInfo: state.customInfo || "",
       xdata,
       prefix,
       suffix,
       profileName
     });
+  } else {
+    const buffer = await file.arrayBuffer();
+    const spiImage = parseSpiImage(buffer);
+    if (spiImage && !spiImage.error) {
+      if (!spiImage.footerOk) {
+        logLine("SPI footer signature mismatch. Rebuilding with correct footer.");
+      }
+      const info = spiImage.fwInfo || { fwDate: "UNKNOWN" };
+      const fwDate = info.fwDate || "UNKNOWN";
+      const header = generateHeader(spiImage.chipModel, state.customInfo || "", xdata, prefix, suffix);
+      const bodyChecksum = sumBytes(spiImage.body) & 0xFF;
+      const bodyCrc = crc32(spiImage.body);
+      let outData = concatBytes([
+        header,
+        packU32LE(spiImage.bodySize),
+        spiImage.body,
+        chipFooter(spiImage.chipModel),
+        new Uint8Array([bodyChecksum]),
+        packU32LE(bodyCrc)
+      ]);
+      const pad = (16 - (outData.length % 16)) % 16;
+      if (pad) {
+        outData = concatBytes([outData, new Uint8Array(pad).fill(0xFF)]);
+      }
+      const profileSuffix = profileName ? `${profileName}` : "";
+      const name = `${profileSuffix}_${fwDate}_SPI.bin`;
+      outputs = [{ name, data: outData }];
+    } else {
+      outputs = extractFirmware(buffer, {
+        ignoreChecksum: false,
+        customInfo: state.customInfo || "",
+        xdata,
+        prefix,
+        suffix,
+        profileName
+      });
+    }
   }
   for (const out of outputs) {
     state.outputs.push(out);
@@ -2267,6 +2802,147 @@ function parseSpiImage(buffer) {
   };
 }
 
+function parseDebugCcEntry(raw) {
+  const text = String(raw || "").trim();
+  if (!text) {
+    return { entry: null, error: "empty entry" };
+  }
+  const parts = text.split(":").map((part) => part.trim());
+  if (parts.length < 2 || parts.length > 3 || parts.some((part) => !part)) {
+    return { entry: null, error: `expected ADDRESS:VALUE[:SIZE], got "${text}"` };
+  }
+  const hexPattern = /^(?:0x)?[0-9a-f]+$/i;
+  if (!hexPattern.test(parts[0])) {
+    return { entry: null, error: `invalid address "${parts[0]}"` };
+  }
+  if (!hexPattern.test(parts[1])) {
+    return { entry: null, error: `invalid value "${parts[1]}"` };
+  }
+  const fullAddr = Number.parseInt(parts[0].replace(/^0x/i, ""), 16);
+  const valueDigits = parts[1].replace(/^0x/i, "");
+  const value = Number.parseInt(valueDigits, 16);
+  if (!Number.isFinite(fullAddr) || fullAddr < 0 || fullAddr > 0xFFFFF) {
+    return { entry: null, error: `address out of range "${parts[0]}"` };
+  }
+  if (!Number.isFinite(value) || value < 0 || value > 0xFFFFFFFF) {
+    return { entry: null, error: `value out of range "${parts[1]}"` };
+  }
+  const size = parts.length === 3 ? Number(parts[2]) : Math.ceil(valueDigits.length / 2);
+  if (![1, 2, 3, 4].includes(size)) {
+    return { entry: null, error: `size must be 1, 2, 3, or 4 bytes in "${text}"` };
+  }
+  const sizeLimit = Math.pow(2, size * 8) - 1;
+  if (value > sizeLimit) {
+    return { entry: null, error: `value does not fit ${size} bytes in "${text}"` };
+  }
+  return {
+    entry: {
+      seg: (fullAddr >>> 16) & 0xF,
+      addr: fullAddr & 0xFFFF,
+      value,
+      size_bytes: size
+    },
+    error: ""
+  };
+}
+
+function parseDebugCcEntries(params) {
+  const entries = [];
+  const errors = [];
+  params.getAll("cc").forEach((rawList) => {
+    rawList.split(",").forEach((rawEntry) => {
+      const parsed = parseDebugCcEntry(rawEntry);
+      if (parsed.entry) {
+        entries.push(parsed.entry);
+      } else {
+        errors.push(parsed.error);
+      }
+    });
+  });
+  return {
+    entries,
+    error: errors.length ? `Invalid cc parameter: ${errors.join("; ")}` : ""
+  };
+}
+
+function parseDebugFlag(params, name) {
+  if (!params.has(name)) {
+    return false;
+  }
+  const raw = (params.get(name) || "").trim().toLowerCase();
+  return raw === "" || raw === "true" || raw === "1" || raw === "yes";
+}
+
+function getDebugBuildConfig() {
+  if (typeof window === "undefined" || !window.location || !window.location.search) {
+    return { enabled: false, model: null, ccEntries: [], noPrefix: false, noSuffix: false, error: "" };
+  }
+  const params = new URLSearchParams(window.location.search);
+  const debugRaw = (params.get("debug") || "").trim().toLowerCase();
+  const enabled = debugRaw === "true" || debugRaw === "1" || debugRaw === "yes";
+  if (!enabled) {
+    return { enabled: false, model: null, ccEntries: [], noPrefix: false, noSuffix: false, error: "" };
+  }
+  const noPrefix = parseDebugFlag(params, "noprefix");
+  const noSuffix = parseDebugFlag(params, "nosuffix");
+  const rawModel = (params.get("model") || "").trim();
+  if (!rawModel) {
+    return { enabled: true, model: null, ccEntries: [], noPrefix, noSuffix, error: "Missing query parameter: model" };
+  }
+  const normalized = rawModel.toLowerCase().replace(/[\s_-]+/g, "");
+  const modelMap = {
+    prom: "Prom",
+    promlp: "PromLP",
+    prom19: "Prom19",
+    prom21: "Prom21"
+  };
+  const model = modelMap[normalized] || null;
+  if (!model) {
+    return { enabled: true, model: null, ccEntries: [], noPrefix, noSuffix, error: `Unsupported debug model: ${rawModel}` };
+  }
+  const ccConfig = parseDebugCcEntries(params);
+  if (ccConfig.error) {
+    return { enabled: true, model: null, ccEntries: [], noPrefix, noSuffix, error: ccConfig.error };
+  }
+  return { enabled: true, model, ccEntries: ccConfig.entries, noPrefix, noSuffix, error: "" };
+}
+
+function buildDebugImage(model, options) {
+  const bodySizeMap = {
+    Prom: 0x20000,
+    PromLP: 0x20000,
+    Prom19: 0x20000,
+    Prom21: 0x20000
+  };
+  const maxBody = bodySizeMap[model];
+  if (!maxBody) {
+    throw new Error(`Unsupported debug model: ${model}`);
+  }
+  const header = generateHeader(model, options.customInfo, options.xdata, options.prefix, options.suffix);
+  const bodySize = maxBody - 0x13 - header.length;
+  if (bodySize < 0) {
+    throw new Error("Header too large for debug body size");
+  }
+  const body = new Uint8Array(bodySize).fill(0xFF);
+  const bodyChecksum = sumBytes(body) & 0xFF;
+  const bodyCrc = crc32(body);
+  let outData = concatBytes([
+    header,
+    packU32LE(bodySize),
+    body,
+    chipFooter(model),
+    new Uint8Array([bodyChecksum]),
+    packU32LE(bodyCrc)
+  ]);
+  const pad = (16 - (outData.length % 16)) % 16;
+  if (pad) {
+    outData = concatBytes([outData, new Uint8Array(pad).fill(0xFF)]);
+  }
+  const profileSuffix = options.profileName ? `${options.profileName}` : "debug";
+  const name = `${profileSuffix}_${model}_DEBUG_SPI.bin`;
+  return [{ name, data: outData }];
+}
+
 function inferImportedOptionKey(item, fullAddr, entryValue, entrySize) {
   if (!item || !Array.isArray(item.byte_fields)) {
     return null;
@@ -2473,7 +3149,7 @@ function extractFirmware(buffer, options) {
 function generateHeader(chipModel, customInfo, xdata, prefix, suffix) {
   const chipMap = {
     "Prom": "3306A_RCFG",
-    "Prom LP": "3306B_RCFG",
+    "PromLP": "3306B_RCFG",
     "Prom19": "3308A_RCFG",
     "Prom21": "3328A_RCFG"
   };
@@ -2578,16 +3254,27 @@ function generateHeader(chipModel, customInfo, xdata, prefix, suffix) {
       cleaned.push(normalized);
     }
   });
-  const prefixEntry = normalizeEntry(prefix);
-  const suffixEntry = normalizeEntry(suffix);
+  const normalizeEntries = (entries) => {
+    const source = Array.isArray(entries) ? entries : [entries];
+    const normalized = [];
+    source.forEach((entry) => {
+      const parsed = normalizeEntry(entry);
+      if (parsed) {
+        normalized.push(parsed);
+      }
+    });
+    return normalized;
+  };
+  const prefixEntries = normalizeEntries(prefix);
+  const suffixEntries = normalizeEntries(suffix);
 
-  if ((cleaned.length || prefixEntry || suffixEntry) && !infoText) {
+  if ((cleaned.length || prefixEntries.length || suffixEntries.length) && !infoText) {
     header = concatBytes([header, new Uint8Array(32)]);
   }
 
-  if (prefixEntry) {
-    header = appendCcEntry(header, prefixEntry);
-  }
+  prefixEntries.forEach((entry) => {
+    header = appendCcEntry(header, entry);
+  });
   cleaned.forEach((entry) => {
     const seqList = Array.isArray(entry.sequence) ? entry.sequence : [];
     let lastSeq = null;
@@ -2609,9 +3296,9 @@ function generateHeader(chipModel, customInfo, xdata, prefix, suffix) {
       header = appendCcEntry(header, entry);
     }
   });
-  if (suffixEntry) {
-    header = appendCcEntry(header, suffixEntry);
-  }
+  suffixEntries.forEach((entry) => {
+    header = appendCcEntry(header, entry);
+  });
 
   const length = header.length;
   header[4] = length & 0xFF;

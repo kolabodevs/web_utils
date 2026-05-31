@@ -1,0 +1,11 @@
+{
+  "hide_groups": [],
+  "hide_items": [],
+  "prefix": [
+        {
+            "address": "0xA520",
+            "size_bytes": 4,
+            "value": "0x12345678"
+        }
+    ]
+}

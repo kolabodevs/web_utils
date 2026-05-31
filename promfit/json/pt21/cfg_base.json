@@ -1,15 +1,17 @@
 {
     "metadata": {
-        "date": "2025-05-29",
-        "version": "1.0",
-        "notes": "Initial release of PT21 configuration data. A part of the ReProm project, Licensed under the GNU General Public License v3.0 or later."
+        "date": "2026-05-29",
+        "version": "1.1",
+        "notes": "Second release of PT21 configuration data, Removed some unused items. A part of the ReProm project, Licensed under the GNU General Public License v3.0 or later."
     },
-    "prefix": {
-        "address": "0x24788",
-        "size_bytes": 1,
-        "value": "0x86"
-    },
-    "suffix": {},
+    "prefix": [
+        {
+            "address": "0x24788",
+            "size_bytes": 1,
+            "value": "0x86"
+        }
+    ],
+    "suffix": [],
     "groups": [
         {
             "code": "114f3545-4eee-4ee4-9a2b-bc4ff222364e",
@@ -1747,15 +1749,11 @@
             ]
         },
         {
-            "code": "ed4a8b0b-505d-4316-a205-73a6325a42cc",
-            "name": "Refclk Controller Region",
-            "groups": []
-        },
-        {
             "code": "1c4fe28e-e748-46dc-b2de-aaadc8bae4d5",
             "name": "xHCI Controller Region",
             "groups": [
                 {
+                    "code": "7488d208-b021-4eb5-bc68-0bcb2048e11e",
                     "name": "xHCI Controller Miscellaneous Configuration",
                     "items": [
                         {
@@ -2261,114 +2259,6 @@
                                     "0x00": "Auto",
                                     "0x04": "USB 3.2 Gen1",
                                     "0x07": "USB 3.2 Gen2"
-                                }
-                            ]
-                        }
-                    ]
-                },
-                {
-                    "code": "4c8ac2aa-dc28-432b-bbb1-d10888ed955a",
-                    "name": "USB Port Warm Reset Assert",
-                    "items": [
-                        {
-                            "code": "d727d443-076e-4d2c-97eb-34be42807960",
-                            "name": "USB 3.2 Port [0] Warm Reset Assert",
-                            "description": "This setting configures the xHCI controller to assert when a warm reset event occurs.",
-                            "access": "RW",
-                            "size_bytes": 1,
-                            "value_type": "bytefield",
-                            "required": false,
-                            "default": "0x10",
-                            "address": "0x19220",
-                            "byte_fields": [
-                                {
-                                    "0x10": "Disabled",
-                                    "0x14": "Enabled"
-                                }
-                            ]
-                        },
-                        {
-                            "code": "2bc440bb-c214-4e28-8468-9a5cf1bab497",
-                            "name": "USB 3.2 Port [1] Warm Reset Assert",
-                            "description": "This setting configures the xHCI controller to assert when a warm reset event occurs.",
-                            "access": "RW",
-                            "size_bytes": 1,
-                            "value_type": "bytefield",
-                            "required": false,
-                            "default": "0x10",
-                            "address": "0x1A220",
-                            "byte_fields": [
-                                {
-                                    "0x10": "Disabled",
-                                    "0x14": "Enabled"
-                                }
-                            ]
-                        },
-                        {
-                            "code": "24f57e14-3c62-42a7-ac24-20a189aab24e",
-                            "name": "USB 3.2 Port [2] Warm Reset Assert",
-                            "description": "This setting configures the xHCI controller to assert when a warm reset event occurs.",
-                            "access": "RW",
-                            "size_bytes": 1,
-                            "value_type": "bytefield",
-                            "required": false,
-                            "default": "0x10",
-                            "address": "0x1B220",
-                            "byte_fields": [
-                                {
-                                    "0x10": "Disabled",
-                                    "0x14": "Enabled"
-                                }
-                            ]
-                        },
-                        {
-                            "code": "9ccf58fa-6ebb-45f5-bb57-ebd50dcdcc80",
-                            "name": "USB 3.2 Port [3] Warm Reset Assert",
-                            "description": "This setting configures the xHCI controller to assert when a warm reset event occurs.",
-                            "access": "RW",
-                            "size_bytes": 1,
-                            "value_type": "bytefield",
-                            "required": false,
-                            "default": "0x10",
-                            "address": "0x1C220",
-                            "byte_fields": [
-                                {
-                                    "0x10": "Disabled",
-                                    "0x14": "Enabled"
-                                }
-                            ]
-                        },
-                        {
-                            "code": "bb9aac79-04d3-4050-adb2-a73b57c85878",
-                            "name": "USB 3.2 Port [4] Warm Reset Assert",
-                            "description": "This setting configures the xHCI controller to assert when a warm reset event occurs.",
-                            "access": "RW",
-                            "size_bytes": 1,
-                            "value_type": "bytefield",
-                            "required": false,
-                            "default": "0x10",
-                            "address": "0x1D220",
-                            "byte_fields": [
-                                {
-                                    "0x10": "Disabled",
-                                    "0x14": "Enabled"
-                                }
-                            ]
-                        },
-                        {
-                            "code": "ecfac03c-8019-47c1-8a56-b7ce4e60912a",
-                            "name": "USB 3.2 Port [5] Warm Reset Assert",
-                            "description": "This setting configures the xHCI controller to assert when a warm reset event occurs.",
-                            "access": "RW",
-                            "size_bytes": 1,
-                            "value_type": "bytefield",
-                            "required": false,
-                            "default": "0x10",
-                            "address": "0x1E220",
-                            "byte_fields": [
-                                {
-                                    "0x10": "Disabled",
-                                    "0x14": "Enabled"
                                 }
                             ]
                         }
@@ -4538,6 +4428,7 @@
             "name": "AHCI Controller Region",
             "groups": [
                 {
+                    "code": "bb24fbfe-6f59-4dd8-81e6-4dda01e6d448",
                     "name": "AHCI Controller Miscellaneous Configuration",
                     "items": [
                         {
@@ -4882,6 +4773,7 @@
                     ]
                 },
                 {
+                    "code": "67aa638f-8c9c-4396-bf83-204f81aae3c1",
                     "name": "Port 0",
                     "items": [
                         {
@@ -5044,6 +4936,7 @@
                     ]
                 },
                 {
+                    "code": "c65fe849-1c92-46cb-b452-942f5c158145",
                     "name": "Port 1 ",
                     "items": [
                         {
@@ -5206,6 +5099,7 @@
                     ]
                 },
                 {
+                    "code": "683e90c0-682b-4a0e-994c-58c00d915e1a",
                     "name": "Port 2",
                     "items": [
                         {
@@ -5368,6 +5262,7 @@
                     ]
                 },
                 {
+                    "code": "d5582c2c-83ec-4ad5-837a-65337090b755",
                     "name": "Port 3",
                     "items": [
                         {
