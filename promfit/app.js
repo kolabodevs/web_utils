@@ -3389,7 +3389,7 @@ const CRC_TABLE = (() => {
   }
   return table;
 })();
-logLine("Promontory Flash Image Tool. Version: Beta 2.1");
+logLine("Promontory Flash Image Tool. Version: 3.0a");
 logLine("For engineering use only.");
 logLine("Licensed under the GNU General Public License v3.0 or later.");
 logLine("Not responsible for the quality or reliability of this software.");
