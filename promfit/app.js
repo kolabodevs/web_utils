@@ -1,6 +1,6 @@
 /*
 @name         "Promontory FCH SPI Firmware Configuration Editor"
-@version      "3.0 - 2026-06-01"
+@version      "3.1a - 2026-06-04"
 @description  "A javascript-based configuration editor for SPI loaded promontory firmware."
 @repository   "https://projects.kolabo.dev/ReProm/"
 @author       "@himko9 - me@himko.dev"
@@ -1819,13 +1819,15 @@ function isValueValid(item, valStr) {
   return true;
 }
 
-function collectXdata() {
+function collectXdata(options) {
+  const opts = options && typeof options === "object" ? options : {};
+  const includeRequired = opts.includeRequired !== false;
   const entries = [];
   const linkForcedCodes = new Set();
 
   const resolveEffectiveHexValue = (item) => {
     const defaultVal = normalizeHex(item.default || "");
-    const required = Boolean(item.required);
+    const required = includeRequired && Boolean(item.required);
     let currentVal = state.values.get(item.code) || "";
     if (!currentVal) {
       if (defaultVal) {
@@ -1926,7 +1928,7 @@ function collectXdata() {
     }
     const defaultHex = normalizeHex(item.default || "");
     const defaultVal = parseHex(defaultHex);
-    const itemRequired = Boolean(item.required);
+    const itemRequired = includeRequired && Boolean(item.required);
     const itemChanged = !hexEquals(currentHex, item.default || "");
     const baseVal = currentVal >>> 0;
     const meta = getBitFieldMeta(item);
@@ -1982,7 +1984,7 @@ function collectXdata() {
     if (!selectedOption || !Array.isArray(selectedOption.link) || !selectedOption.link.length) {
       return;
     }
-    if (!item.required && hexEquals(currentHex, item.default || "")) {
+    if (!(includeRequired && item.required) && hexEquals(currentHex, item.default || "")) {
       return;
     }
     selectedOption.link.forEach((code) => {
@@ -1998,7 +2000,7 @@ function collectXdata() {
       return;
     }
     const currentHex = resolveEffectiveHexValue(item);
-    if (!item.required && hexEquals(currentHex, item.default || "")) {
+    if (!(includeRequired && item.required) && hexEquals(currentHex, item.default || "")) {
       return;
     }
     links.forEach((code) => {
@@ -2018,7 +2020,7 @@ function collectXdata() {
     }
     const size = Number(item.size_bytes || 1);
     const defaultVal = normalizeHex(item.default || "");
-    const required = Boolean(item.required);
+    const required = includeRequired && Boolean(item.required);
     let currentVal = state.values.get(item.code) || "";
     const hasDefault = Boolean(defaultVal);
     const hasCurrent = Boolean(currentVal);
@@ -2076,7 +2078,7 @@ function collectXdata() {
         }
       }
     }
-    const effectiveRequired = required || Boolean(selectedOption && selectedOption.required) || linkForcedCodes.has(item.code);
+    const effectiveRequired = required || (includeRequired && Boolean(selectedOption && selectedOption.required)) || linkForcedCodes.has(item.code);
     if (!changed && !effectiveRequired) {
       return;
     }
@@ -2378,19 +2380,25 @@ els.buildBtn.addEventListener("click", async () => {
     logLine("No input file selected.");
     return;
   }
-  const xdata = collectXdata();
-  if (debugConfig.enabled && debugConfig.ccEntries.length) {
+  const collectedPrefix = debugConfig.noPrefix ? [] : collectPrefixEntries();
+  const collectedSuffix = debugConfig.noSuffix ? [] : collectSuffixEntries();
+  const urlCcFirst = debugConfig.enabled && debugConfig.ccEntries.length;
+  const prefix = urlCcFirst ? [] : collectedPrefix;
+  const suffix = collectedSuffix;
+  const profileXdata = collectXdata({ includeRequired: !debugConfig.changedOnly });
+  const xdata = [];
+  if (urlCcFirst) {
     xdata.push(...debugConfig.ccEntries);
+    xdata.push(...collectedPrefix);
   }
-  const prefix = debugConfig.noPrefix ? [] : collectPrefixEntries();
-  const suffix = debugConfig.noSuffix ? [] : collectSuffixEntries();
+  xdata.push(...profileXdata);
   const seqCount = xdata.reduce((acc, entry) => acc + (entry.sequence !== undefined ? 1 : 0), 0);
   const extra = [];
   if (seqCount) {
     extra.push(`${seqCount} sequenced`);
   }
-  if (prefix.length) {
-    extra.push(`${prefix.length} prefix`);
+  if (collectedPrefix.length) {
+    extra.push(`${collectedPrefix.length} prefix`);
   }
   if (suffix.length) {
     extra.push(`${suffix.length} suffix`);
@@ -2403,6 +2411,9 @@ els.buildBtn.addEventListener("click", async () => {
   }
   if (debugConfig.noSuffix) {
     extra.push("no suffix");
+  }
+  if (debugConfig.changedOnly) {
+    extra.push("changed only");
   }
   const extraText = extra.length ? ` (${extra.join(", ")})` : "";
   logLine(`Building with ${xdata.length} CC entries${extraText}.`);
@@ -2458,6 +2469,9 @@ els.buildBtn.addEventListener("click", async () => {
     }
   }
   for (const out of outputs) {
+    if (debugConfig.enabled) {
+      dumpDebugBuildToConsole(out);
+    }
     state.outputs.push(out);
     const blob = new Blob([out.data], { type: "application/octet-stream" });
     triggerDownload(out.name, blob);
@@ -2742,6 +2756,59 @@ function parseSpiCcEntries(buffer) {
   };
 }
 
+function formatHexViewer(bytes, startOffset = 0, width = 16) {
+  const lines = [];
+  for (let offset = 0; offset < bytes.length; offset += width) {
+    const chunk = bytes.slice(offset, offset + width);
+    const hex = Array.from(chunk)
+      .map((value) => value.toString(16).padStart(2, "0").toUpperCase())
+      .join(" ")
+      .padEnd(width * 3 - 1, " ");
+    const ascii = Array.from(chunk)
+      .map((value) => (value >= 0x20 && value <= 0x7E) ? String.fromCharCode(value) : ".")
+      .join("");
+    lines.push(`${(startOffset + offset).toString(16).padStart(8, "0").toUpperCase()}  ${hex}  |${ascii}|`);
+  }
+  return lines.join("\n");
+}
+
+function formatDebugCcEntries(entries) {
+  if (!entries || !entries.length) {
+    return "(none)";
+  }
+  return entries.map((entry, index) => {
+    const fullAddr = ((entry.seg & 0xF) << 16) | (entry.addr & 0xFFFF);
+    const width = Math.max(2, entry.size_bytes * 2);
+    const value = entry.value.toString(16).toUpperCase().padStart(width, "0");
+    return `${String(index).padStart(3, "0")}: seg=${entry.seg} addr=0x${fullAddr.toString(16).toUpperCase().padStart(5, "0")} size=${entry.size_bytes} value=0x${value}`;
+  }).join("\n");
+}
+
+function dumpDebugBuildToConsole(output) {
+  if (typeof console === "undefined" || !console.log || !output || !output.data) {
+    return;
+  }
+  const bytes = output.data instanceof Uint8Array ? output.data : new Uint8Array(output.data);
+  const parsed = parseSpiCcEntries(bytes.buffer);
+  if (!parsed || parsed.error) {
+    console.log(`[PROMFIT DEBUG] ${output.name || "debug output"}: unable to decode RCFG header${parsed && parsed.error ? ` (${parsed.error})` : ""}`);
+    return;
+  }
+  const headerBytes = bytes.slice(0, parsed.headerLen + 5);
+  console.log(
+    [
+      `[PROMFIT DEBUG] ${output.name || "debug output"}`,
+      `chip=${parsed.chipModel} headerLen=${parsed.headerLen} checksumOk=${parsed.checksumOk} crcOk=${parsed.crcOk} ccEntries=${parsed.entries.length}`,
+      "",
+      "Header:",
+      formatHexViewer(headerBytes),
+      "",
+      "CC Entries:",
+      formatDebugCcEntries(parsed.entries)
+    ].join("\n")
+  );
+}
+
 function parseSpiImage(buffer) {
   const bytes = new Uint8Array(buffer);
   if (bytes.length < 32) {
@@ -2875,19 +2942,20 @@ function parseDebugFlag(params, name) {
 
 function getDebugBuildConfig() {
   if (typeof window === "undefined" || !window.location || !window.location.search) {
-    return { enabled: false, model: null, ccEntries: [], noPrefix: false, noSuffix: false, error: "" };
+    return { enabled: false, model: null, ccEntries: [], noPrefix: false, noSuffix: false, changedOnly: false, error: "" };
   }
   const params = new URLSearchParams(window.location.search);
   const debugRaw = (params.get("debug") || "").trim().toLowerCase();
   const enabled = debugRaw === "true" || debugRaw === "1" || debugRaw === "yes";
   if (!enabled) {
-    return { enabled: false, model: null, ccEntries: [], noPrefix: false, noSuffix: false, error: "" };
+    return { enabled: false, model: null, ccEntries: [], noPrefix: false, noSuffix: false, changedOnly: false, error: "" };
   }
   const noPrefix = parseDebugFlag(params, "noprefix");
   const noSuffix = parseDebugFlag(params, "nosuffix");
+  const changedOnly = parseDebugFlag(params, "changedonly");
   const rawModel = (params.get("model") || "").trim();
   if (!rawModel) {
-    return { enabled: true, model: null, ccEntries: [], noPrefix, noSuffix, error: "Missing query parameter: model" };
+    return { enabled: true, model: null, ccEntries: [], noPrefix, noSuffix, changedOnly, error: "Missing query parameter: model" };
   }
   const normalized = rawModel.toLowerCase().replace(/[\s_-]+/g, "");
   const modelMap = {
@@ -2898,13 +2966,13 @@ function getDebugBuildConfig() {
   };
   const model = modelMap[normalized] || null;
   if (!model) {
-    return { enabled: true, model: null, ccEntries: [], noPrefix, noSuffix, error: `Unsupported debug model: ${rawModel}` };
+    return { enabled: true, model: null, ccEntries: [], noPrefix, noSuffix, changedOnly, error: `Unsupported debug model: ${rawModel}` };
   }
   const ccConfig = parseDebugCcEntries(params);
   if (ccConfig.error) {
-    return { enabled: true, model: null, ccEntries: [], noPrefix, noSuffix, error: ccConfig.error };
+    return { enabled: true, model: null, ccEntries: [], noPrefix, noSuffix, changedOnly, error: ccConfig.error };
   }
-  return { enabled: true, model, ccEntries: ccConfig.entries, noPrefix, noSuffix, error: "" };
+  return { enabled: true, model, ccEntries: ccConfig.entries, noPrefix, noSuffix, changedOnly, error: "" };
 }
 
 function buildDebugImage(model, options) {
@@ -3389,7 +3457,7 @@ const CRC_TABLE = (() => {
   }
   return table;
 })();
-logLine("Promontory Flash Image Tool. Version: 3.0a");
+logLine("Promontory Flash Image Tool. Version: 3.1a");
 logLine("For engineering use only.");
 logLine("Licensed under the GNU General Public License v3.0 or later.");
 logLine("Not responsible for the quality or reliability of this software.");
